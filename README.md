@@ -1,17 +1,21 @@
 <!-- Copyright 2013-2020 Mark Callow -->
+<!-- Copyright 2021 Julius Ikkala -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-<img src="https://www.khronos.org/assets/images/api_logos/khronos.svg" width="300"/>
-
-The Official Khronos KTX Software Repository
+Decrufted fork of the Khronos KTX Software Repository
 ---
 
-| GNU/Linux, iOS & OSX |  Windows | Documentation |
-|----------------------| :------: | :-----------: |
-| [![Build Status](https://travis-ci.com/KhronosGroup/KTX-Software.svg?branch=master)](https://travis-ci.com/KhronosGroup/KTX-Software) | [![Build status](https://ci.appveyor.com/api/projects/status/rj9bg8g2jphg3rc0/branch/master?svg=true)](https://ci.appveyor.com/project/msc-/ktx/branch/master) | [![Build status](https://codedocs.xyz/KhronosGroup/KTX-Software.svg)](https://codedocs.xyz/KhronosGroup/KTX-Software/) |
+This is a "decrufted" version of the KTX-Software repo. It only includes the
+read-only part of libKTX and _nothing_ else! It also removes the lib/etcdec.cxx,
+which had a particularly problematic (non-open-source) license.
 
-This is the official home of the source code
-for the Khronos KTX library and tools.
+The only changes from upstream are removals of entire files or modifications in
+the documentation and the build and license files to remove unused parts. Care
+has been taken to keep the project REUSE 3.0-compliant after these removals.
+
+Below are the contents of the original README.md:
+
+---
 
 KTX (Khronos Texture) is a lightweight container for textures for OpenGL<sup>®</sup>, Vulkan<sup>®</sup> and other GPU APIs. KTX files contain all the parameters needed for texture loading. A single file can contain anything from a simple base-level 2D texture through to a cubemap array texture with mipmaps. Contained textures can be in a Basis Universal format, in any of the block-compressed formats supported by OpenGL family and Vulkan APIs and extensions or in an uncompressed single-plane format. Basis Universal currently encompasses two formats that can be quickly transcoded to any GPU-supported format: LZ/ETC1S, which combines block-compression and supercompression, and UASTC, a block-compressed format. Formats other than LZ/ETC1S can be supercompressed with Zstd.
 

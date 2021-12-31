@@ -1,25 +1,21 @@
 # Copyright 2015-2020 The Khronos Group Inc.
+# Modified by Julius Ikkala in 2021.
 # SPDX-License-Identifier: Apache-2.0
 
 cmake_minimum_required(VERSION 3.15)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules/")
 
-find_package(Bash REQUIRED)
-
-include(cmake/version.cmake)
+set(KTX_VERSION 4)
 
 project(KTX-Software
     VERSION ${KTX_VERSION}
     DESCRIPTION "Libraries and tools to create and read KTX image texture files."
 )
 
-include(CTest)
-
 include(GNUInstallDirs)
 include(CMakeDependentOption)
 
-include(cmake/xcode.cmake)
 include(cmake/cputypetest.cmake)
 
 # OPTIONS
@@ -30,12 +26,7 @@ else()
     set( LIB_TYPE_DEFAULT OFF )
 endif()
 
-CMAKE_DEPENDENT_OPTION(KTX_FEATURE_TOOLS "Create KTX tools" ON "NOT IOS;NOT ANDROID;NOT EMSCRIPTEN" OFF)
-option( KTX_FEATURE_DOC "Create KTX documentation" OFF )
-option( KTX_FEATURE_LOADTEST_APPS "Create load tests apps that load and display various KTX textures" OFF )
 option( KTX_FEATURE_STATIC_LIBRARY "Create static libraries (shared otherwise)" ${LIB_TYPE_DEFAULT} )
-option( KTX_FEATURE_TESTS "Create unit tests" ON )
-option( KTX_FEATURE_JNI "Create Java bindings for libktx" OFF )
 
 set_target_processor_type(CPU_ARCHITECTURE)
 if(CPU_ARCHITECTURE STREQUAL x86_64 OR CPU_ARCHITECTURE STREQUAL x86)
@@ -84,10 +75,6 @@ if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT ANDROID)
     set(LINUX TRUE)
 endif()
 
-if(EMSCRIPTEN)
-    set( KTX_FEATURE_VULKAN OFF )
-endif()
-
 set(bitness 64)
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR FORCE32)
         set(bitness 32)
@@ -115,21 +102,7 @@ elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU"
        OR ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
     add_compile_options(-Wall -Wextra)
     add_compile_options( $<IF:$<CONFIG:Debug>,-O0,-O3> )
-    if(EMSCRIPTEN)
-        # For reasons I have yet to understand, the clang v12 used by the
-        # current Emscripten versions raises this deprecated copy warning on
-        # the assimp headers while the clang v12 used by Xcode does not. I am
-        # also unable to update the assimp headers as the macOS build of the
-        # matching version of libassimp fails. There has been no response
-        # from the assimp project and I don't have time to investigate.
-        # Therefore, since we don't have an Emscripten port of libassimp,
-        # meaning the relevant load tests will never be called, just globally
-        # suppress the warning.
-        add_compile_options(-Wno-deprecated-copy)
-        add_link_options( $<IF:$<CONFIG:Debug>,-gsource-map,-O3> )
-    else()
-        add_link_options( $<IF:$<CONFIG:Debug>,-g,-O3> )
-    endif()
+    add_link_options( $<IF:$<CONFIG:Debug>,-g,-O3> )
 else()
     message(ERROR "${CMAKE_CXX_COMPILER_ID} not yet supported.")
 endif()
@@ -148,7 +121,6 @@ set(KTX_MAIN_SRC
     lib/basisu/transcoder/basisu_transcoder.cpp
     lib/basisu/transcoder/basisu_transcoder.h
     lib/basisu/transcoder/basisu.h
-    lib/basisu/zstd/zstd.c
     lib/checkheader.c
     lib/dfdutils/createdfd.c
     lib/dfdutils/colourspaces.c
@@ -160,8 +132,6 @@ set(KTX_MAIN_SRC
     lib/dfdutils/vk2dfd.c
     lib/dfdutils/vulkan/vk_platform.h
     lib/dfdutils/vulkan/vulkan_core.h
-    lib/etcdec.cxx
-    lib/etcunpack.cxx
     lib/filestream.c
     lib/filestream.h
     lib/formatsize.h
@@ -192,11 +162,6 @@ if(KTX_FEATURE_GL_UPLOAD)
     )
 endif()
 
-# Main library
-add_library( ktx ${LIB_TYPE}
-    ${KTX_MAIN_SRC}
-    )
-
 # Read-only library
 add_library( ktx_read ${LIB_TYPE}
     ${KTX_MAIN_SRC}
@@ -215,7 +180,6 @@ macro(commom_lib_settings lib write)
         SOVERSION ${PROJECT_VERSION_MAJOR}
         XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"
     )
-    set_xcode_code_sign(${lib})
 
     target_compile_definitions(
         ${lib}
@@ -229,24 +193,17 @@ macro(commom_lib_settings lib write)
     target_compile_features(${lib} PUBLIC c_std_99 cxx_std_11)
 
     # Compiler Warning Flags
-    if(EMSCRIPTEN)
-        target_compile_options(${lib} PRIVATE
+    target_compile_options(${lib} PRIVATE
+        # clang options
+        $<$<CXX_COMPILER_ID:AppleClang,Clang>:
             -Wno-nested-anon-types
             -Wno-gnu-anonymous-struct
-        )
-    else()
-        target_compile_options(${lib} PRIVATE
-            # clang options
-            $<$<CXX_COMPILER_ID:AppleClang,Clang>:
-                -Wno-nested-anon-types
-                -Wno-gnu-anonymous-struct
-            >
-            # not clang options
-            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
-                -Wno-pedantic
-            >
-        )
-    endif()
+        >
+        # not clang options
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
+            -Wno-pedantic
+        >
+    )
 
     target_include_directories(
         ${lib}
@@ -256,15 +213,6 @@ macro(commom_lib_settings lib write)
     PRIVATE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/transcoder>
         $<INSTALL_INTERFACE:lib/basisu/transcoder>
-
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/zstd>
-        $<INSTALL_INTERFACE:lib/basisu/zstd>
-
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/other_include>
-        $<INSTALL_INTERFACE:other_include>
-
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/utils>
-        $<INSTALL_INTERFACE:utils>
     )
 
     if( LIB_TYPE STREQUAL STATIC )
@@ -299,24 +247,6 @@ macro(commom_lib_settings lib write)
             KTX_API=__declspec\(dllexport\)
         PUBLIC # only for basisu_c_binding.
             BASISU_NO_ITERATOR_DEBUG_LEVEL
-        )
-        target_sources(
-            ${lib}
-        PRIVATE
-            # The msvs generator automatically sets the needed VCLinker
-            # option when a .def file is seen in sources.
-            lib/internalexport.def
-            $<${write}:lib/internalexport_write.def>
-        )
-    elseif(EMSCRIPTEN)
-        target_compile_definitions(${lib} PRIVATE
-            # To reduce size, don't support transcoding to formats not
-            # supported # by WebGL.
-            BASISD_SUPPORT_ATC=0
-            BASISD_SUPPORT_PVRTC2=0
-            # Don't support higher quality mode to avoid 64k table.
-            BASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY=0
-            KTX_OMIT_VULKAN=1
         )
     endif()
 
@@ -389,11 +319,7 @@ endmacro(commom_lib_settings)
 
 set(KTX_BUILD_DIR "${CMAKE_BINARY_DIR}")
 
-commom_lib_settings(ktx 1)
 commom_lib_settings(ktx_read 0)
-
-create_version_header(lib ktx)
-create_version_file()
 
 target_compile_definitions(
     ktx_read
@@ -403,70 +329,6 @@ PRIVATE
     BASISD_SUPPORT_KTX2=0
 )
 
-# Adding write capability to target ktx
-
-set(BASISU_ENCODER_C_SRC
-    lib/basisu/encoder/apg_bmp.c
-    lib/basisu/encoder/apg_bmp.h
-    )
-
-set(BASISU_ENCODER_CXX_SRC
-    lib/basisu/encoder/basisu_astc_decomp.cpp
-    lib/basisu/encoder/basisu_astc_decomp.h
-    lib/basisu/encoder/basisu_backend.cpp
-    lib/basisu/encoder/basisu_backend.h
-    lib/basisu/encoder/basisu_basis_file.cpp
-    lib/basisu/encoder/basisu_basis_file.h
-    lib/basisu/encoder/basisu_bc7enc.cpp
-    lib/basisu/encoder/basisu_bc7enc.h
-    lib/basisu/encoder/basisu_comp.cpp
-    lib/basisu/encoder/basisu_comp.h
-    lib/basisu/encoder/basisu_enc.cpp
-    lib/basisu/encoder/basisu_enc.h
-    lib/basisu/encoder/basisu_etc.cpp
-    lib/basisu/encoder/basisu_etc.h
-    lib/basisu/encoder/basisu_frontend.cpp
-    lib/basisu/encoder/basisu_frontend.h
-    lib/basisu/encoder/basisu_global_selector_palette_helpers.cpp
-    lib/basisu/encoder/basisu_global_selector_palette_helpers.h
-    lib/basisu/encoder/basisu_gpu_texture.cpp
-    lib/basisu/encoder/basisu_gpu_texture.h
-    lib/basisu/encoder/basisu_kernels_declares.h
-    lib/basisu/encoder/basisu_kernels_imp.h
-    lib/basisu/encoder/basisu_kernels_sse.cpp
-    lib/basisu/encoder/basisu_miniz.h
-    lib/basisu/encoder/basisu_pvrtc1_4.cpp
-    lib/basisu/encoder/basisu_pvrtc1_4.h
-    lib/basisu/encoder/basisu_resample_filters.cpp
-    lib/basisu/encoder/basisu_resampler_filters.h
-    lib/basisu/encoder/basisu_resampler.cpp
-    lib/basisu/encoder/basisu_resampler.h
-    lib/basisu/encoder/basisu_ssim.cpp
-    lib/basisu/encoder/basisu_ssim.h
-    lib/basisu/encoder/basisu_uastc_enc.cpp
-    lib/basisu/encoder/basisu_uastc_enc.h
-    lib/basisu/encoder/cppspmd_flow.h
-    lib/basisu/encoder/cppspmd_math.h
-    lib/basisu/encoder/cppspmd_math_declares.h
-    lib/basisu/encoder/cppspmd_sse.h
-    lib/basisu/encoder/cppspmd_type_aliases.h
-    lib/basisu/encoder/jpgd.cpp
-    lib/basisu/encoder/jpgd.h
-    lib/basisu/encoder/lodepng.cpp
-    lib/basisu/encoder/lodepng.h
-    )
-
-target_sources(
-    ktx
-PRIVATE
-    lib/basis_encode.cpp
-    lib/astc_encode.cpp
-    ${BASISU_ENCODER_C_SRC}
-    ${BASISU_ENCODER_CXX_SRC}
-    lib/writer1.c
-    lib/writer2.c
-)
-
 # Turn off these warnings until Rich fixes the occurences.
 # It it not clear to me if generator expressions can be used here
 # hence the long-winded way.
@@ -474,230 +336,15 @@ if(MSVC)
 # Currently no need to disable any warnings in basisu code. Rich fixed them.
 elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
     set_source_files_properties(
-        # It's too much work to discriminate which files need which warnings
-        # disabled.
-        ${BASISU_ENCODER_CXX_SRC}
-        PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-variable;-Wno-class-memaccess;-Wno-misleading-indentation;-Wno-extra;-Wno-deprecated-copy;-Wno-parentheses;-Wno-strict-aliasing"
-        )
-    set_source_files_properties(
         lib/basisu/transcoder/basisu_transcoder.cpp
         PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-function;-Wno-unused-variable;-Wno-class-memaccess;-Wno-maybe-uninitialized"
         )
-elseif(EMSCRIPTEN)
-    set_source_files_properties(
-        ${BASISU_ENCODER_CXX_SRC}
-        PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-variable;-Wno-unused-parameter"
-        )
-    set_source_files_properties(
-        lib/basisu/transcoder/basisu_transcoder.cpp
-        PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-function;-Wno-unused-variable;"
-        )
 elseif(${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
-    #message(STATUS "CMAKE_CXX_COMPILER_VERSION = ${CMAKE_CXX_COMPILER_VERSION}")
-    if (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "12.0.5")
-        set_source_files_properties( lib/basisu/encoder/basisu_kernels_sse.cpp
-            PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-deprecated-copy;-Wno-uninitialized-const-reference"
-            )
-    else()
-        set_source_files_properties( lib/basisu/encoder/basisu_kernels_sse.cpp
-            PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter"
-            )
-    endif()
 else()
     message(ERROR "${CMAKE_CXX_COMPILER_ID} not yet supported.")
 endif()
 
-target_include_directories(
-    ktx
-PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu>
-    $<INSTALL_INTERFACE:lib/basisu>
-)
-target_compile_definitions(
-    ktx
-PUBLIC
-    KTX_FEATURE_WRITE
-PRIVATE
-    # BASISD_SUPPORT_KTX2 has to be 1 to compile the encoder. We
-    # don't use it. Hopefully it doesn't add too much code. We're using
-    # the zstd encoder in basisu by explicitly including the file in our
-    # source list. We don't need the related code in the encoder.
-    BASISD_SUPPORT_KTX2_ZSTD=0
-    BASISD_SUPPORT_KTX2=1
-    $<$<BOOL:${BASISU_SUPPORT_SSE}>:BASISU_SUPPORT_SSE=1>
-    $<$<NOT:$<BOOL:${BASISU_SUPPORT_SSE}>>:BASISU_SUPPORT_SSE=0>
-)
-target_compile_options(
-    ktx
-PRIVATE
-    $<$<AND:$<BOOL:${BASISU_SUPPORT_SSE}>,$<CXX_COMPILER_ID:AppleClang,Clang,GNU>>:
-        -msse4.1
-    >
-)
-
-if(EMSCRIPTEN)
-    set(
-        KTX_EMC_LINK_FLAGS
-        --bind
-        "SHELL:--source-map-base ./"
-        "SHELL:-s ALLOW_MEMORY_GROWTH=1"
-        "SHELL:-s ASSERTIONS=0"
-        "SHELL:-s MALLOC=emmalloc"
-        "SHELL:-s MODULARIZE=1"
-        "SHELL:-s FULL_ES3=1"
-    )
-
-    add_executable( ktx_js interface/js_binding/ktx_wrapper.cpp )
-    target_link_libraries( ktx_js ktx_read )
-    target_include_directories( ktx_js PRIVATE $<TARGET_PROPERTY:ktx_read,INTERFACE_INCLUDE_DIRECTORIES> )
-    target_link_options(
-        ktx_js
-    PUBLIC
-        ${KTX_EMC_LINK_FLAGS}
-        "SHELL:-s EXPORT_NAME=LIBKTX"
-        "SHELL:-s EXPORTED_RUNTIME_METHODS=[\'GL\']"
-        "SHELL:-s GL_PREINITIALIZED_CONTEXT=1"
-    )
-    set_target_properties( ktx_js PROPERTIES OUTPUT_NAME "libktx")
-
-    add_custom_command(
-        TARGET ktx_js
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:ktx_js>/$<TARGET_FILE_PREFIX:ktx_js>$<TARGET_FILE_BASE_NAME:ktx_js>.js" "${PROJECT_SOURCE_DIR}/tests/webgl"
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:ktx_js>/$<TARGET_FILE_PREFIX:ktx_js>$<TARGET_FILE_BASE_NAME:ktx_js>.wasm" "${PROJECT_SOURCE_DIR}/tests/webgl"
-        COMMENT "Copy libktx.js and libktx.wasm to tests/webgl"
-    )
-
-    install(TARGETS ktx_js
-        RUNTIME
-            DESTINATION .
-            COMPONENT ktx_js
-    )
-    install(FILES ${CMAKE_BINARY_DIR}/libktx.wasm
-        DESTINATION .
-        COMPONENT ktx_js
-    )
-
-    add_executable( msc_basis_transcoder_js interface/js_binding/transcoder_wrapper.cpp )
-    target_link_libraries( msc_basis_transcoder_js ktx_read )
-    target_include_directories( msc_basis_transcoder_js
-        PRIVATE
-        lib
-        lib/basisu/transcoder
-    )
-
-    # Re-use ktx's compile options
-    target_compile_options(msc_basis_transcoder_js
-    PRIVATE
-       $<TARGET_PROPERTY:ktx_read,INTERFACE_COMPILE_OPTIONS>
-       )
-
-    target_link_options(
-        msc_basis_transcoder_js
-    PUBLIC
-        ${KTX_EMC_LINK_FLAGS}
-        "SHELL:-s EXPORT_NAME=MSC_TRANSCODER"
-        # Re-use ktx's link options
-        $<TARGET_PROPERTY:ktx_read,INTERFACE_LINK_OPTIONS>
-        )
-    set_target_properties( msc_basis_transcoder_js PROPERTIES OUTPUT_NAME "msc_basis_transcoder")
-
-    add_custom_command(
-        TARGET ktx_js
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:msc_basis_transcoder_js>/$<TARGET_FILE_PREFIX:msc_basis_transcoder_js>$<TARGET_FILE_BASE_NAME:msc_basis_transcoder_js>.js" "${PROJECT_SOURCE_DIR}/tests/webgl"
-        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:msc_basis_transcoder_js>/$<TARGET_FILE_PREFIX:msc_basis_transcoder_js>$<TARGET_FILE_BASE_NAME:msc_basis_transcoder_js>.wasm" "${PROJECT_SOURCE_DIR}/tests/webgl"
-        COMMENT "Copy msc_basis_transcoder.js and msc_basis_transcoder.wasm to tests/webgl"
-    )
-
-    install(TARGETS msc_basis_transcoder_js
-        RUNTIME
-            DESTINATION .
-            COMPONENT msc_basis_transcoder_js
-    )
-    install(FILES ${CMAKE_BINARY_DIR}/msc_basis_transcoder.wasm
-        DESTINATION .
-        COMPONENT msc_basis_transcoder_js
-    )
-endif()
-
-add_library( objUtil STATIC
-    utils/argparser.cpp
-    utils/argparser.h
-    utils/ktxapp.h
-    utils/scapp.h
-    utils/unused.h
-    )
-target_include_directories(
-    objUtil
-PUBLIC
-    utils
-)
-
-add_subdirectory(interface/basisu_c_binding)
-
-# Only one architecture is supported at once, if neither of
-# ISA_SSE41 and ISA_SSE2  are defined ISA_AVX2 is chosen.
-# If ISA_AVX2 fails to compile user must chose other x86 options.
-# On arm based systems ISA_NEON is default
-
-list(FIND CMAKE_OSX_ARCHITECTURES "$(ARCHS_STANDARD)" ASTC_BUILD_UNIVERSAL)
-
-if(${ASTC_BUILD_UNIVERSAL} EQUAL -1)
-    if (${ISA_NONE})
-        set(ASTC_LIB_NAME astcenc-none-static)
-    else()
-        if(CPU_ARCHITECTURE STREQUAL x86_64 OR CPU_ARCHITECTURE STREQUAL x86)
-            if (${ISA_SSE41})
-                set(ASTC_LIB_NAME astcenc-sse4.1-static)
-            elseif (${ISA_SSE2})
-                set(ASTC_LIB_NAME astcenc-sse2-static)
-            else()
-                set(ISA_AVX2 ON)
-                set(ASTC_LIB_NAME astcenc-avx2-static)
-            endif()
-            if(CPU_ARCHITECTURE STREQUAL x86)
-                set(ISA_NONE ON)
-                set(ISA_AVX2 OFF)
-                set(ASTCENC_POPCNT 0)
-                set(ASTC_LIB_NAME astcenc-none-static)
-            endif()
-        elseif(CPU_ARCHITECTURE STREQUAL armv8 OR CPU_ARCHITECTURE STREQUAL arm64)
-            set(ASTC_LIB_NAME astcenc-neon-static)
-            set(ISA_NEON ON)
-        else()
-            message(STATUS "Unsupported ISA for ${CPU_ARCHITECTURE} arch, using ISA_NONE.")
-            set(ISA_NONE ON)
-        endif()
-    endif()
-else()
-    set(ASTC_LIB_NAME astcenc-static)
-endif()
-
-# astcenc
-set(CLI OFF) # Only build as library not the CLI astcencoder
-add_subdirectory(lib/astc-encoder)
-set_property(TARGET ${ASTC_LIB_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(ktx PRIVATE ${ASTC_LIB_NAME})
-
-# Tools
-if(KTX_FEATURE_TOOLS)
-    add_subdirectory(tools)
-endif()
-
-# Tests
-add_subdirectory(tests)
-
-# Documentation
-if(KTX_FEATURE_DOC)
-    include(cmake/docs.cmake)
-endif()
-
-set(KTX_INSTALL_TARGETS ktx)
-
-if(KTX_FEATURE_STATIC_LIBRARY)
-    list(APPEND KTX_INSTALL_TARGETS ${ASTC_LIB_NAME})
-endif()
+set(KTX_INSTALL_TARGETS ktx_read)
 
 # Install
 
@@ -739,150 +386,3 @@ else()
             COMPONENT dev
     )
 endif()
-
-install(EXPORT KTXTargets
-    FILE KtxTargets.cmake
-    NAMESPACE KTX::
-    DESTINATION lib/cmake/ktx
-    COMPONENT library
-)
-
-include(CMakePackageConfigHelpers)
-write_basic_package_version_file(
-    "KtxConfigVersion.cmake"
-    COMPATIBILITY SameMajorVersion
-)
-
-install( FILES
-    "cmake/KtxConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/KtxConfigVersion.cmake"
-    DESTINATION lib/cmake/ktx
-    COMPONENT library
-)
-
-
-# CPack
-
-include(CPackComponent)
-
-set(CPACK_PACKAGE_NAME "KTX-Software")
-set(CPACK_PACKAGE_VENDOR "Khronos Group")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.khronos.org/KTX-Software")
-set(CPACK_PACKAGE_CONTACT "khronos@callow.im" )
-
-set(CPACK_RESOURCE_FILE_WELCOME "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Welcome.rtf")
-set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReadMe.rtf")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/License.rtf")
-
-# Custom package file name
-set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}-${KTX_VERSION_FULL}-${CMAKE_SYSTEM_NAME}")
-
-if(APPLE)
-    install(FILES tools/package/mac/ktx-uninstall
-        DESTINATION ${CMAKE_INSTALL_BINDIR}
-        PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-        COMPONENT tools
-    )
-    set(CPACK_GENERATOR productbuild)
-    # Trick the productbuild generator into creating more useful package IDs
-    set(CPACK_PACKAGE_NAME "ktx")
-    set(CPACK_PACKAGE_VENDOR "khronos")
-    # Install at root level
-    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
-
-    set(CPACK_PRODUCTBUILD_IDENTITY_NAME ${PRODUCTBUILD_IDENTITY_NAME})
-    set(CPACK_PRODUCTBUILD_KEYCHAIN_PATH ${PRODUCTBUILD_KEYCHAIN_PATH})
-
-    # Contains the `summary.html` file, shown at end of installation
-    set(CPACK_PRODUCTBUILD_RESOURCES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/package/mac/Resources")
-
-elseif(LINUX)
-    set(CPACK_GENERATOR DEB RPM TBZ2)
-    set(CPACK_PACKAGE_CHECKSUM SHA1)
-    set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReadMe.txt")
-elseif(WIN32)
-    # Use the Icon file for the installer.exe
-    set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/win/ktx_app.ico")
-    set(CPACK_NSIS_MANIFEST_DPI_AWARE ON)
-    set(CPACK_NSIS_URL_INFO_ABOUT ${CPACK_PACKAGE_HOMEPAGE_URL})
-    set(CPACK_NSIS_CONTACT ${CPACK_PACKAGE_CONTACT})
-    set(CPACK_NSIS_MODIFY_PATH ON)
-    set(CPACK_PACKAGE_INSTALL_DIRECTORY "KTX-Software")
-    ## Alternative: add major version at end
-    #set(CPACK_PACKAGE_INSTALL_DIRECTORY "KTX-Software-${PROJECT_VERSION_MAJOR}")
-    set(CPACK_PACKAGE_CHECKSUM SHA1)
-    # Custom Package name to make sure it has the "-win64" suffix.
-    set(CPACK_VERSION_FULL ${KTX_VERSION_FULL})
-    set(CPACK_PROJECT_CONFIG_FILE ${CMAKE_SOURCE_DIR}/cmake/package.txt)
-elseif(EMSCRIPTEN)
-    set(CPACK_GENERATOR ZIP)
-    set(CPACK_ARCHIVE_KTX_JS_FILE_NAME "${CMAKE_PROJECT_NAME}-${KTX_VERSION_FULL}-Web-libktx")
-    set(CPACK_ARCHIVE_MSC_BASIS_TRANSCODER_JS_FILE_NAME "${CMAKE_PROJECT_NAME}-${KTX_VERSION_FULL}-Web-msc_basis_transcoder")
-
-    set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
-    set(CPACK_PACKAGE_CHECKSUM SHA1)
-else()
-    set(CPACK_PACKAGE_CHECKSUM SHA1)
-endif()
-
-cpack_add_component(library
-    DISPLAY_NAME "Library"
-    DESCRIPTION "Main KTX library"
-    REQUIRED
-)
-# if(KTX_NAMELINKS)
-#     cpack_add_component(Namelinks
-#         DEPENDS library
-#         HIDDEN
-#     )
-# endif()
-cpack_add_component(tools
-    DISPLAY_NAME "Command line tools"
-    DESCRIPTION "Command line tools for creating, converting and inspecting KTX files."
-    DEPENDS library
-)
-cpack_add_component(dev
-    DISPLAY_NAME "Development"
-    DESCRIPTION "Additional resources for development (header files and documentation)"
-    DEPENDS library
-    DISABLED
-)
-
-if(KTX_FEATURE_LOADTEST_APPS)
-    cpack_add_component(GlLoadTestApps
-        GROUP LoadTestApps
-        DISPLAY_NAME "OpenGL Test Applications"
-        DISABLED
-    )
-    cpack_add_component(VkLoadTestApp
-        GROUP LoadTestApps
-        DISPLAY_NAME "Vulkan Test Application"
-        DISABLED
-    )
-    cpack_add_component_group(LoadTestApps
-        DISPLAY_NAME "Load Test Applications"
-    )
-endif()
-
-if(EMSCRIPTEN)
-    set(CPACK_COMPONENTS_ALL
-        ktx_js
-        msc_basis_transcoder_js
-    )
-else()
-    set(CPACK_COMPONENTS_ALL
-        library
-        tools
-        dev
-        # Headers
-    )
-endif()
-# if(KTX_NAMELINKS)
-#     list(APPEND CPACK_COMPONENTS_ALL
-#         Namelinks
-#     )
-# endif()
-
-include(CPack)
-
-include(cmake/jni.cmake)
