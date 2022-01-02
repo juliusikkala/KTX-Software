@@ -44,3 +44,7 @@ License: Apache-2.0
 Files: cmake/modules/NSIS.InstallOptions.ini.in cmake/*.rtf
 Copyright: 2017-2020 Andreas Atteneder
 License: Apache-2.0
+
+Files: other_lib/*/*/*zstd* other_include/zstd*
+Copyright: 2016-present Facebook, Inc.
+License: BSD-3-Clause

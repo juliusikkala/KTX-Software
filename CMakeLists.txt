@@ -217,6 +217,9 @@ macro(commom_lib_settings lib write)
 
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/zstd>
         $<INSTALL_INTERFACE:lib/basisu/zstd>
+
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/other_include>
+        $<INSTALL_INTERFACE:other_include>
     )
 
     if( LIB_TYPE STREQUAL STATIC )
