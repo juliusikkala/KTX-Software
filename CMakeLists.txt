@@ -214,6 +214,9 @@ macro(commom_lib_settings lib write)
     PRIVATE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/transcoder>
         $<INSTALL_INTERFACE:lib/basisu/transcoder>
+
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/zstd>
+        $<INSTALL_INTERFACE:lib/basisu/zstd>
     )
 
     if( LIB_TYPE STREQUAL STATIC )
