@@ -90,7 +90,7 @@ else()
 endif()
 
 # Depends on the settings, so it must be included after
-include(cmake/mkvk.cmake)
+#include(cmake/mkvk.cmake)
 
 # Global compile & link options including optimization flags
 if(MSVC)
