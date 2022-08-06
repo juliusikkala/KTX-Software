@@ -28,14 +28,58 @@ endif()
 
 option( KTX_FEATURE_STATIC_LIBRARY "Create static libraries (shared otherwise)" ${LIB_TYPE_DEFAULT} )
 
+if(POLICY CMP0127)
+    # cmake_dependent_option() supports full Condition Syntax. Introduced in
+    # 3.22. Not all build environments have 3.22+. Set policy to avoid warning.
+    # Seems the parens in the match string trigger the warning.
+    cmake_policy(SET CMP0127 NEW)
+endif()
 set_target_processor_type(CPU_ARCHITECTURE)
-if(CPU_ARCHITECTURE STREQUAL x86_64 OR CPU_ARCHITECTURE STREQUAL x86)
-    option( BASISU_SUPPORT_SSE "Compile with SSE support so applications can choose to use it" ON )
+CMAKE_DEPENDENT_OPTION( BASISU_SUPPORT_SSE
+    "Compile with SSE support so applications can choose to use it."
+    ON
+    "NOT CMAKE_OSX_ARCHITECTURES STREQUAL \"$(ARCHS_STANDARD)\"; CPU_ARCHITECTURE STREQUAL x86_64 OR CPU_ARCHITECTURE STREQUAL x86"
+    OFF
+)
+CMAKE_DEPENDENT_OPTION( BASISU_SUPPORT_OPENCL
+    "Compile with OpenCL support so applications can choose to use it."
+    OFF
+    "OpenCL_FOUND OR WIN32"
+    OFF
+)
+
+if(BASISU_SUPPORT_OPENCL AND WIN32 AND NOT OpenCL_FOUND)
+    # To avoid fiddly setting up of OpenCL on Windows CI VMs, use copy in repo.
+    set(OpenCL_INCLUDE_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/opencl"
+        # FORCE to override *-NOTFOUND set by the failed find.
+        CACHE PATH "" FORCE
+    )
+    set(OpenCL_LIBRARY
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu/opencl/lib/OpenCL64.lib"
+        CACHE FILEPATH "" FORCE
+    )
+    set(OpenCL_INCLUDE_DIRS ${OpenCL_INCLUDE_DIR})
+    set(OpenCL_LIBRARIES ${OpenCL_LIBRARY})
 endif()
 
-CMAKE_DEPENDENT_OPTION(KTX_EMBED_BITCODE "Embed bitcode in binaries" OFF "APPLE AND IOS" OFF)
+
+CMAKE_DEPENDENT_OPTION( KTX_EMBED_BITCODE
+    "Embed bitcode in binaries"
+    OFF
+    "APPLE AND IOS"
+    OFF
+)
+
+option( KTX_FEATURE_KTX1 "Enable KTX 1 support" ON )
+option( KTX_FEATURE_KTX2 "Enable KTX 2 support" ON )
+option( KTX_FEATURE_VULKAN "Enable Vulkan texture upload" ON )
+option( KTX_FEATURE_GL_UPLOAD "Enable OpenGL texture upload" ON )
+
+# Platform specific settings
 
 if(APPLE)
+    # Signing
     set(XCODE_CODE_SIGN_IDENTITY "Development" CACHE STRING "Xcode code sign ID")
     set(XCODE_DEVELOPMENT_TEAM "" CACHE STRING "Xcode development team ID")
     set(PRODUCTBUILD_IDENTITY_NAME "" CACHE STRING "productbuild identity name")
@@ -44,30 +88,28 @@ if(APPLE)
         set(XCODE_PROVISIONING_PROFILE_SPECIFIER "" CACHE STRING "Xcode provisioning profile specifier")
         set(MOLTENVK_SDK "$ENV{VULKAN_SDK}/../MoltenVK" CACHE STRING "MoltenVK directory inside the Vulkan SDK")
     endif()
-endif()
 
-# Might become options in the future
-
-# option( KTX_FEATURE_KTX1 "KTX version 1" ON )
-# option( KTX_FEATURE_KTX2 "KTX version 2" ON )
-
-set( KTX_FEATURE_KTX1 ON )
-set( KTX_FEATURE_KTX2 ON )
-set( KTX_FEATURE_VULKAN ON )
-set( KTX_FEATURE_GL_UPLOAD "" ON )
-
-# Platform specific settings
-
-if (WIN32 AND ${CMAKE_SYSTEM_NAME} STREQUAL "WindowsStore")
-    # Disable OpenGL upload on Universal Windows Platform
-    set(KTX_FEATURE_GL_UPLOAD OFF)
-endif()
-
-if(APPLE)
+    # Deployment
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.11" CACHE STRING "macOS Deployment Target")
     if(IOS)
         set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "11.0" CACHE STRING "iOS Deployment Target")
         set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH NO)
+    endif()
+endif()
+
+if (WIN32)
+    # Signing
+    set(WIN_CODE_SIGN_IDENTITY "" CACHE STRING "Subject Name of Windows code signing certificate. Displayed in 'Issued To' field of cert{lm,mgr}.")
+    CMAKE_DEPENDENT_OPTION( WIN_CS_CERT_SEARCH_MACHINE_STORE
+        "When set, machine store will be searched for signing certificate instead of user store."
+        OFF
+        WIN_CODE_SIGN_IDENTITY
+        OFF
+    )
+
+    if (${CMAKE_SYSTEM_NAME} STREQUAL "WindowsStore")
+        # Disable OpenGL upload on Universal Windows Platform
+        set(KTX_FEATURE_GL_UPLOAD OFF)
     endif()
 endif()
 
@@ -114,8 +156,6 @@ set(KTX_MAIN_SRC
     lib/basisu/transcoder/basisu_containers.h
     lib/basisu/transcoder/basisu_containers_impl.h
     lib/basisu/transcoder/basisu_file_headers.h
-    lib/basisu/transcoder/basisu_global_selector_cb.h
-    lib/basisu/transcoder/basisu_global_selector_palette.h
     lib/basisu/transcoder/basisu_transcoder_internal.h
     lib/basisu/transcoder/basisu_transcoder_uastc.h
     lib/basisu/transcoder/basisu_transcoder.cpp
@@ -126,11 +166,11 @@ set(KTX_MAIN_SRC
     lib/dfdutils/createdfd.c
     lib/dfdutils/colourspaces.c
     lib/dfdutils/dfd.h
-    lib/dfdutils/dfd2vk.inl
     lib/dfdutils/interpretdfd.c
     lib/dfdutils/printdfd.c
     lib/dfdutils/queries.c
     lib/dfdutils/vk2dfd.c
+    lib/dfdutils/vk2dfd.inl
     lib/dfdutils/vulkan/vk_platform.h
     lib/dfdutils/vulkan/vulkan_core.h
     lib/filestream.c
@@ -272,19 +312,29 @@ macro(commom_lib_settings lib write)
     endif()
 
     if(WIN32)
-        # By wrapping in generator expression we force multi configuration generators (like Visual Studio)
-        # to take the exact path and not change it.
+        # By wrapping in generator expression we force multi configuration
+        # generators (like Visual Studio) to take the exact path and not
+        # change it.
         set(CMAKE_RUNTIME_OUTPUT_DIRECTORY $<1:${KTX_BUILD_DIR}/$<CONFIG>>)
+        
+        if(MINGW)
+            # Check if the Threads package is provided; if using Mingw it MIGHT be
+            find_package(Threads)
+            if(Threads_FOUND)
+                target_compile_definitions(ktx PRIVATE WIN32_HAS_PTHREADS)
+                target_link_libraries(ktx PRIVATE Threads::Threads)
+            endif()
+        endif()
 
     elseif(APPLE)
         if(KTX_EMBED_BITCODE)
             target_compile_options(${lib} PRIVATE "-fembed-bitcode")
         endif()
         if(NOT IOS)
-            # Set a common RUNTIME_OUTPUT_DIR for all target, so that INSTALL RPATH
-            # is functional in build directory as well. BUILD_WITH_INSTALL_RPATH is necessary
-            # for working code signing.
-            set(CMAKE_RUNTIME_OUTPUT_DIRECTORY $<1:${KTX_BUILD_DIR}/$<CONFIG>>)
+            # Set a common RUNTIME_OUTPUT_DIR for all targets, so that
+            # INSTALL RPATH is functional in build directory as well.
+            # BUILD_WITH_INSTALL_RPATH is necessary for working code signing.
+            set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${KTX_BUILD_DIR}/$<CONFIG>)
         endif()
 
     elseif(LINUX)
@@ -339,14 +389,89 @@ PRIVATE
 # Turn off these warnings until Rich fixes the occurences.
 # It it not clear to me if generator expressions can be used here
 # hence the long-winded way.
-if(MSVC)
+#message(STATUS
+#        "CMAKE_CXX_COMPILER_ID = ${CMAKE_CXX_COMPILER_ID} "
+#        "CMAKE_CXX_COMPILER_VERSION = ${CMAKE_CXX_COMPILER_VERSION}"
+#)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
 # Currently no need to disable any warnings in basisu code. Rich fixed them.
-elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_source_files_properties(
+        # It's too much work to discriminate which files need which warnings
+        # disabled.
+        ${BASISU_ENCODER_CXX_SRC}
+        PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-variable;-Wno-class-memaccess;-Wno-misleading-indentation;-Wno-extra;-Wno-deprecated-copy;-Wno-parentheses;-Wno-strict-aliasing"
+    )
     set_source_files_properties(
         lib/basisu/transcoder/basisu_transcoder.cpp
         PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-function;-Wno-unused-variable;-Wno-class-memaccess;-Wno-maybe-uninitialized"
+    )
+    if (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "11.0")
+        set_source_files_properties(
+            lib/basisu/zstd/zstd.c
+            PROPERTIES COMPILE_OPTIONS "-Wno-unused-but-set-variable"
         )
-elseif(${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        # Versions equivalency from https://en.wikipedia.org/wiki/Xcode#Xcode_11.x_-_14.x_(since_SwiftUI_framework)_2
+        if (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "14")
+            set( clang_version ${CMAKE_CXX_COMPILER_VERSION})
+        elseif (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "13.1.0")
+            set( clang_version "13.0.0")
+        elseif (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "13.0.0")
+            set( clang_version "12.0.0")
+        elseif (${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "12.0.5")
+            set( clang_version "11.1.0")
+        elseif (${CMAKE_CXX_COMPILER_VERSION} VERSION_EQUAL "12.0.0")
+            set( clang_version "10.0.0")
+        else()
+            message(FATAL "Unsupported AppleClang version")
+        endif()
+    else()
+        set( clang_version ${CMAKE_CXX_COMPILER_VERSION} )
+    endif()
+    if (${clang_version} VERSION_GREATER_EQUAL "12.0.0")
+        set_source_files_properties( lib/basisu/encoder/basisu_kernels_sse.cpp
+            PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-deprecated-copy;-Wno-uninitialized-const-reference"
+        )
+        # Primarily an issue on windows using clang/clangcl
+        # Lowest tested clang version was 12.0.0 and highest was 14.0.4
+        set_source_files_properties(
+            lib/basisu/zstd/zstd.c
+            PROPERTIES COMPILE_OPTIONS "-Wno-unused-function"
+        )
+    else()
+        set_source_files_properties( lib/basisu/encoder/basisu_kernels_sse.cpp
+            PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter"
+        )
+    endif()
+    if (${clang_version} VERSION_GREATER_EQUAL "13.0.0")
+        get_source_file_property(zstd_options lib/basisu/zstd/zstd.c COMPILE_OPTIONS)
+        set_source_files_properties(
+            # We haven't fixed zstd.c because the fix would have to be applied
+            # every time the upstream script is used to create an updated
+            # single file decoder.
+            lib/basisu/zstd/zstd.c
+            PROPERTIES COMPILE_OPTIONS "${zstd_options};-Wno-unused-but-set-variable"
+        )
+    endif()
+    if (${clang_version} VERSION_GREATER_EQUAL "15.0")
+        # These are for Emscripten which is ahead of xcode in its clang
+        # version. Also future proofing for when xcode catches up.
+        set_source_files_properties(
+            ${BASISU_ENCODER_CXX_SRC}
+            PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-variable;-Wno-unused-parameter"
+        )
+        set_source_files_properties(
+            lib/basisu/transcoder/basisu_transcoder.cpp
+            PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-function;-Wno-unused-variable"
+        )
+        set_source_files_properties(
+            lib/basisu/zstd/zstd.c
+            PROPERTIES COMPILE_OPTIONS "-Wno-unused-but-set-variable;-Wno-bitwise-instead-of-logical"
+        )
+    endif()
 else()
     message(ERROR "${CMAKE_CXX_COMPILER_ID} not yet supported.")
 endif()
@@ -360,6 +485,12 @@ if(APPLE OR LINUX)
     set(KTX_NAMELINKS ON)
     install(TARGETS ${KTX_INSTALL_TARGETS}
         EXPORT KTXTargets
+        ARCHIVE
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            COMPONENT library
+        FRAMEWORK
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            COMPONENT library
         LIBRARY
             DESTINATION ${CMAKE_INSTALL_LIBDIR}
             COMPONENT library

@@ -44,3 +44,11 @@ CMakeSettings.json
 /interface/java_binding/build/
 /interface/java_binding/target/
 /interface/java_binding/libktx.iml
+
+# CLion
+.idea
+cmake-build-*
+
+# Temps used for Windows signing on CI
+appveyor-tools
+the_khronos_group_inc.p12
