@@ -5,9 +5,9 @@
 Decrufted fork of the Khronos KTX Software Repository
 ---
 
-This is a "decrufted" version of the KTX-Software repo. It only includes the
-read-only part of libKTX and _nothing_ else! It also removes the lib/etcdec.cxx,
-which had a particularly problematic (non-open-source) license.
+This is a "decrufted" version of the KTX-Software repo. It only includes libKTX
+and _nothing_ else! It also removes the lib/etcdec.cxx, which had a particularly
+problematic (non-open-source) license.
 
 The only changes from upstream are removals of entire files or modifications in
 the documentation and the build and license files to remove unused parts. Care

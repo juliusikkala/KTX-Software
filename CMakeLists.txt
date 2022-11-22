@@ -1,12 +1,11 @@
 # Copyright 2015-2020 The Khronos Group Inc.
-# Modified by Julius Ikkala in 2021.
+# Modified by Julius Ikkala in 2022.
 # SPDX-License-Identifier: Apache-2.0
-
 cmake_minimum_required(VERSION 3.15)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules/")
 
-set(KTX_VERSION 4)
+include(cmake/version.cmake)
 
 project(KTX-Software
     VERSION ${KTX_VERSION}
@@ -26,6 +25,12 @@ else()
     set( LIB_TYPE_DEFAULT OFF )
 endif()
 
+CMAKE_DEPENDENT_OPTION( KTX_FEATURE_TOOLS
+                        "Create KTX tools"
+                        ON
+                        "NOT IOS;NOT ANDROID;NOT EMSCRIPTEN"
+                        OFF
+)
 option( KTX_FEATURE_STATIC_LIBRARY "Create static libraries (shared otherwise)" ${LIB_TYPE_DEFAULT} )
 
 if(POLICY CMP0127)
@@ -117,6 +122,10 @@ if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT ANDROID)
     set(LINUX TRUE)
 endif()
 
+if(EMSCRIPTEN)
+    set( KTX_FEATURE_VULKAN OFF )
+endif()
+
 set(bitness 64)
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR FORCE32)
         set(bitness 32)
@@ -132,7 +141,7 @@ else()
 endif()
 
 # Depends on the settings, so it must be included after
-#include(cmake/mkvk.cmake)
+include(cmake/mkvk.cmake)
 
 # Global compile & link options including optimization flags
 if(MSVC)
@@ -144,7 +153,11 @@ elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU"
        OR ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
     add_compile_options(-Wall -Wextra)
     add_compile_options( $<IF:$<CONFIG:Debug>,-O0,-O3> )
-    add_link_options( $<IF:$<CONFIG:Debug>,-g,-O3> )
+    if(EMSCRIPTEN)
+        add_link_options( $<IF:$<CONFIG:Debug>,-gsource-map,-O3> )
+    else()
+        add_link_options( $<IF:$<CONFIG:Debug>,-g,-O3> )
+    endif()
 else()
     message(ERROR "${CMAKE_CXX_COMPILER_ID} not yet supported.")
 endif()
@@ -157,7 +170,6 @@ set(KTX_MAIN_SRC
     lib/basisu/transcoder/basisu_containers_impl.h
     lib/basisu/transcoder/basisu_file_headers.h
     lib/basisu/transcoder/basisu_transcoder_internal.h
-    lib/basisu/transcoder/basisu_transcoder_uastc.h
     lib/basisu/transcoder/basisu_transcoder.cpp
     lib/basisu/transcoder/basisu_transcoder.h
     lib/basisu/transcoder/basisu.h
@@ -203,6 +215,11 @@ if(KTX_FEATURE_GL_UPLOAD)
     )
 endif()
 
+# Main library
+add_library( ktx ${LIB_TYPE}
+    ${KTX_MAIN_SRC}
+    )
+
 # Read-only library
 add_library( ktx_read ${LIB_TYPE}
     ${KTX_MAIN_SRC}
@@ -221,6 +238,11 @@ macro(commom_lib_settings lib write)
         SOVERSION ${PROJECT_VERSION_MAJOR}
         XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"
     )
+    if(IOS)
+        set_target_properties(${lib} PROPERTIES
+            FRAMEWORK TRUE
+        )
+    endif()
 
     target_compile_definitions(
         ${lib}
@@ -234,17 +256,27 @@ macro(commom_lib_settings lib write)
     target_compile_features(${lib} PUBLIC c_std_99 cxx_std_11)
 
     # Compiler Warning Flags
-    target_compile_options(${lib} PRIVATE
-        # clang options
-        $<$<CXX_COMPILER_ID:AppleClang,Clang>:
+    if(EMSCRIPTEN)
+        target_compile_options(${lib} PRIVATE
             -Wno-nested-anon-types
             -Wno-gnu-anonymous-struct
-        >
-        # not clang options
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
-            -Wno-pedantic
-        >
-    )
+        )
+    else()
+        target_compile_options(${lib} PRIVATE
+            # clang options
+            $<$<CXX_COMPILER_ID:AppleClang,Clang>:
+                -Wno-nested-anon-types
+                -Wno-gnu-anonymous-struct
+            >
+            $<$<CXX_COMPILER_ID:GNU>:
+                -Wno-cast-function-type
+            >
+            # not clang options
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
+                -Wno-pedantic
+            >
+        )
+    endif()
 
     target_include_directories(
         ${lib}
@@ -260,6 +292,9 @@ macro(commom_lib_settings lib write)
 
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/other_include>
         $<INSTALL_INTERFACE:other_include>
+
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/utils>
+        $<INSTALL_INTERFACE:utils>
     )
 
     if( LIB_TYPE STREQUAL STATIC )
@@ -295,6 +330,40 @@ macro(commom_lib_settings lib write)
         PUBLIC # only for basisu_c_binding.
             BASISU_NO_ITERATOR_DEBUG_LEVEL
         )
+        # The generator automatically sets the needed VCLinker
+        # option when a .def file is seen in sources.
+        # The def files that we add have a different syntax depending on the ABI
+        if(MINGW)
+            target_sources(
+                ${lib}
+            PRIVATE
+                lib/internalexport_mingw.def
+                $<${write}:lib/internalexport_write_mingw.def>
+            )
+            # Need these flags if mingw happens to target the ucrt (new) rather
+            # than the legacy msvcrt. Otherwise tests will fail to run because
+            # the necessary dlls will be missing. If we statically link
+            # them instead it's fine. This does not cause any abberations if
+            # the mingw toolchain targets msvcrt instead.
+            target_link_options(${lib} PUBLIC -static-libgcc -static-libstdc++)
+        else()
+            target_sources(
+                ${lib}
+            PRIVATE
+                lib/internalexport.def
+                $<${write}:lib/internalexport_write.def>
+            )
+        endif()
+    elseif(EMSCRIPTEN)
+        target_compile_definitions(${lib} PRIVATE
+            # To reduce size, don't support transcoding to formats not
+            # supported # by WebGL.
+            BASISD_SUPPORT_ATC=0
+            BASISD_SUPPORT_PVRTC2=0
+            # Don't support higher quality mode to avoid 64k table.
+            BASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY=0
+            KTX_OMIT_VULKAN=1
+        )
     endif()
 
     if(KTX_FEATURE_KTX1)
@@ -316,7 +385,7 @@ macro(commom_lib_settings lib write)
         # generators (like Visual Studio) to take the exact path and not
         # change it.
         set(CMAKE_RUNTIME_OUTPUT_DIRECTORY $<1:${KTX_BUILD_DIR}/$<CONFIG>>)
-        
+
         if(MINGW)
             # Check if the Threads package is provided; if using Mingw it MIGHT be
             find_package(Threads)
@@ -376,7 +445,11 @@ endmacro(commom_lib_settings)
 
 set(KTX_BUILD_DIR "${CMAKE_BINARY_DIR}")
 
+commom_lib_settings(ktx 1)
 commom_lib_settings(ktx_read 0)
+
+create_version_header(lib ktx)
+create_version_file()
 
 target_compile_definitions(
     ktx_read
@@ -384,6 +457,56 @@ PRIVATE
     # We're reading the files ourselves so don't need Basis KTX v2 support.
     BASISD_SUPPORT_KTX2_ZSTD=0
     BASISD_SUPPORT_KTX2=0
+)
+
+# Adding write capability to target ktx
+
+set(BASISU_ENCODER_CXX_SRC
+    lib/basisu/encoder/basisu_backend.cpp
+    lib/basisu/encoder/basisu_backend.h
+    lib/basisu/encoder/basisu_basis_file.cpp
+    lib/basisu/encoder/basisu_basis_file.h
+    lib/basisu/encoder/basisu_bc7enc.cpp
+    lib/basisu/encoder/basisu_bc7enc.h
+    lib/basisu/encoder/basisu_comp.cpp
+    lib/basisu/encoder/basisu_comp.h
+    lib/basisu/encoder/basisu_enc.cpp
+    lib/basisu/encoder/basisu_enc.h
+    lib/basisu/encoder/basisu_etc.cpp
+    lib/basisu/encoder/basisu_etc.h
+    lib/basisu/encoder/basisu_frontend.cpp
+    lib/basisu/encoder/basisu_frontend.h
+    lib/basisu/encoder/basisu_gpu_texture.cpp
+    lib/basisu/encoder/basisu_gpu_texture.h
+    lib/basisu/encoder/basisu_kernels_declares.h
+    lib/basisu/encoder/basisu_kernels_imp.h
+    lib/basisu/encoder/basisu_kernels_sse.cpp
+    lib/basisu/encoder/basisu_miniz.h
+    lib/basisu/encoder/basisu_opencl.cpp
+    lib/basisu/encoder/basisu_opencl.h
+    lib/basisu/encoder/basisu_pvrtc1_4.cpp
+    lib/basisu/encoder/basisu_pvrtc1_4.h
+    lib/basisu/encoder/basisu_resample_filters.cpp
+    lib/basisu/encoder/basisu_resampler_filters.h
+    lib/basisu/encoder/basisu_resampler.cpp
+    lib/basisu/encoder/basisu_resampler.h
+    lib/basisu/encoder/basisu_ssim.cpp
+    lib/basisu/encoder/basisu_ssim.h
+    lib/basisu/encoder/cppspmd_flow.h
+    lib/basisu/encoder/cppspmd_math.h
+    lib/basisu/encoder/cppspmd_math_declares.h
+    lib/basisu/encoder/cppspmd_sse.h
+    lib/basisu/encoder/cppspmd_type_aliases.h
+)
+
+target_sources(
+    ktx
+PRIVATE
+    lib/basis_encode.cpp
+    ${BASISU_ENCODER_C_SRC}
+    ${BASISU_ENCODER_CXX_SRC}
+    lib/writer1.c
+    lib/writer2.c
 )
 
 # Turn off these warnings until Rich fixes the occurences.
@@ -476,8 +599,129 @@ else()
     message(ERROR "${CMAKE_CXX_COMPILER_ID} not yet supported.")
 endif()
 
-set(KTX_INSTALL_TARGETS ktx_read)
+target_include_directories(
+    ktx
+PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/basisu>
+    $<INSTALL_INTERFACE:lib/basisu>
+    $<$<BOOL:${BASISU_SUPPORT_OPENCL}>:${OpenCL_INCLUDE_DIRS}>
+)
+target_compile_definitions(
+    ktx
+PUBLIC
+    KTX_FEATURE_WRITE
+PRIVATE
+    # BASISD_SUPPORT_KTX2 has to be 1 to compile the encoder. We
+    # don't use it. Hopefully it doesn't add too much code. We're using
+    # the zstd encoder in basisu by explicitly including the file in our
+    # source list. We don't need the related code in the encoder.
+    BASISD_SUPPORT_KTX2_ZSTD=0
+    BASISD_SUPPORT_KTX2=1
+    $<$<BOOL:${BASISU_SUPPORT_SSE}>:BASISU_SUPPORT_SSE=1>
+    $<$<NOT:$<BOOL:${BASISU_SUPPORT_SSE}>>:BASISU_SUPPORT_SSE=0>
+    $<$<BOOL:${BASISU_SUPPORT_OPENCL}>:BASISU_SUPPORT_OPENCL=1>
+    $<$<NOT:$<BOOL:${BASISU_SUPPORT_OPENCL}>>:BASISU_SUPPORT_OPENCL=0>
+)
+target_compile_options(
+    ktx
+PRIVATE
+    $<$<AND:$<BOOL:${BASISU_SUPPORT_SSE}>,$<CXX_COMPILER_ID:AppleClang,Clang,GNU>>:
+        -msse4.1
+    >
+)
+target_link_libraries(
+    ktx
+PRIVATE
+    $<$<BOOL:${BASISU_SUPPORT_OPENCL}>:${OpenCL_LIBRARIES}>
+)
 
+if(EMSCRIPTEN)
+    set(
+        KTX_EMC_LINK_FLAGS
+        --bind
+        "SHELL:--source-map-base ./"
+        "SHELL:-s ALLOW_MEMORY_GROWTH=1"
+        "SHELL:-s ASSERTIONS=0"
+        "SHELL:-s MALLOC=emmalloc"
+        "SHELL:-s MODULARIZE=1"
+        "SHELL:-s FULL_ES3=1"
+    )
+
+    add_executable( ktx_js interface/js_binding/ktx_wrapper.cpp )
+    target_link_libraries( ktx_js ktx_read )
+    target_include_directories( ktx_js PRIVATE $<TARGET_PROPERTY:ktx_read,INTERFACE_INCLUDE_DIRECTORIES> )
+    target_link_options(
+        ktx_js
+    PUBLIC
+        ${KTX_EMC_LINK_FLAGS}
+        "SHELL:-s EXPORT_NAME=LIBKTX"
+        "SHELL:-s EXPORTED_RUNTIME_METHODS=[\'GL\']"
+        "SHELL:-s GL_PREINITIALIZED_CONTEXT=1"
+    )
+    set_target_properties( ktx_js PROPERTIES OUTPUT_NAME "libktx")
+
+    add_custom_command(
+        TARGET ktx_js
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:ktx_js>/$<TARGET_FILE_PREFIX:ktx_js>$<TARGET_FILE_BASE_NAME:ktx_js>.js" "${PROJECT_SOURCE_DIR}/tests/webgl"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:ktx_js>/$<TARGET_FILE_PREFIX:ktx_js>$<TARGET_FILE_BASE_NAME:ktx_js>.wasm" "${PROJECT_SOURCE_DIR}/tests/webgl"
+        COMMENT "Copy libktx.js and libktx.wasm to tests/webgl"
+    )
+
+    install(TARGETS ktx_js
+        RUNTIME
+            DESTINATION .
+            COMPONENT ktx_js
+    )
+    install(FILES ${CMAKE_BINARY_DIR}/libktx.wasm
+        DESTINATION .
+        COMPONENT ktx_js
+    )
+
+    add_executable( msc_basis_transcoder_js interface/js_binding/transcoder_wrapper.cpp )
+    target_link_libraries( msc_basis_transcoder_js ktx_read )
+    target_include_directories( msc_basis_transcoder_js
+        PRIVATE
+        lib
+        lib/basisu/transcoder
+    )
+
+    # Re-use ktx's compile options
+    target_compile_options(msc_basis_transcoder_js
+    PRIVATE
+       $<TARGET_PROPERTY:ktx_read,INTERFACE_COMPILE_OPTIONS>
+       )
+
+    target_link_options(
+        msc_basis_transcoder_js
+    PUBLIC
+        ${KTX_EMC_LINK_FLAGS}
+        "SHELL:-s EXPORT_NAME=MSC_TRANSCODER"
+        # Re-use ktx's link options
+        $<TARGET_PROPERTY:ktx_read,INTERFACE_LINK_OPTIONS>
+        )
+    set_target_properties( msc_basis_transcoder_js PROPERTIES OUTPUT_NAME "msc_basis_transcoder")
+
+    add_custom_command(
+        TARGET ktx_js
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:msc_basis_transcoder_js>/$<TARGET_FILE_PREFIX:msc_basis_transcoder_js>$<TARGET_FILE_BASE_NAME:msc_basis_transcoder_js>.js" "${PROJECT_SOURCE_DIR}/tests/webgl"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE_DIR:msc_basis_transcoder_js>/$<TARGET_FILE_PREFIX:msc_basis_transcoder_js>$<TARGET_FILE_BASE_NAME:msc_basis_transcoder_js>.wasm" "${PROJECT_SOURCE_DIR}/tests/webgl"
+        COMMENT "Copy msc_basis_transcoder.js and msc_basis_transcoder.wasm to tests/webgl"
+    )
+
+    install(TARGETS msc_basis_transcoder_js
+        RUNTIME
+            DESTINATION .
+            COMPONENT msc_basis_transcoder_js
+    )
+    install(FILES ${CMAKE_BINARY_DIR}/msc_basis_transcoder.wasm
+        DESTINATION .
+        COMPONENT msc_basis_transcoder_js
+    )
+endif()
+
+set(KTX_INSTALL_TARGETS ktx)
 # Install
 
 if(APPLE OR LINUX)
@@ -524,3 +768,23 @@ else()
             COMPONENT dev
     )
 endif()
+
+install(EXPORT KTXTargets
+    FILE KtxTargets.cmake
+    NAMESPACE KTX::
+    DESTINATION lib/cmake/ktx
+    COMPONENT library
+)
+
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+    "KtxConfigVersion.cmake"
+    COMPATIBILITY SameMajorVersion
+)
+
+install( FILES
+    "cmake/KtxConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/KtxConfigVersion.cmake"
+    DESTINATION lib/cmake/ktx
+    COMPONENT library
+)
